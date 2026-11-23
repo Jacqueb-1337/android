@@ -22,7 +22,7 @@ import kotlin.concurrent.thread
 /**
  * Root mode: no VpnService, so Android's VPN slot stays available for Tailscale.
  * The helper supplies a root-created TUN FD and adds a policy rule at priority
- * 23123, after VPN routing but before normal physical-network fallback.
+ * 22000, after VPN routing but before normal physical-network fallback.
  */
 class MergeRootService : Service() {
     companion object {

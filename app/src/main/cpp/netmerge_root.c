@@ -10,6 +10,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <linux/if_tun.h>
 #include <linux/if.h>
 #include <stddef.h>
@@ -25,7 +26,7 @@
 
 #define IFACE "nmrg0"
 #define TABLE "32013"
-#define PREF "23123"
+#define PREF "22000"
 #define MTU "9000"
 
 static int run(const char *const args[]) {
@@ -41,15 +42,40 @@ static int run(const char *const args[]) {
 }
 #define IP(...) run((const char *const[]) {"/system/bin/ip", __VA_ARGS__, NULL})
 
-static void cleanup(void) {
-    /* Scoped by BOTH priority and table: never delete Android's own rules. */
-    IP("-4", "rule", "del", "pref", PREF, "fwmark", "0x0/0x1ffff", "iif", "lo", "lookup", TABLE);
-    IP("-6", "rule", "del", "pref", PREF, "fwmark", "0x0/0x1ffff", "iif", "lo", "lookup", TABLE);
+/*
+ * Android marks ordinary sockets with nonzero netIds (e.g. 0x12b, 0x130).
+ * The old 0x0/0x1ffff filter matched only completely unmarked sockets.
+ * Match normal per-app network IDs, but not protected/explicitly bound
+ * sockets (high fwmark flags), and exempt our own egress UID to avoid loops.
+ */
+static int mutate_rules(int add, uid_t app_uid) {
+    if (app_uid <= 10000 || app_uid >= INT_MAX) return -1;
+    const char *verb = add ? "add" : "del";
+    char below[48], above[48];
+    snprintf(below, sizeof(below), "10000-%u", (unsigned)app_uid - 1);
+    snprintf(above, sizeof(above), "%u-%u", (unsigned)app_uid + 1, INT_MAX);
+    int result = 0;
+    if (app_uid > 10000) {
+        if (IP("-4", "rule", verb, "pref", PREF, "fwmark", "0x0/0xf0000",
+               "iif", "lo", "uidrange", below, "lookup", TABLE)) result = -1;
+        if (IP("-6", "rule", verb, "pref", PREF, "fwmark", "0x0/0xf0000",
+               "iif", "lo", "uidrange", below, "lookup", TABLE)) result = -1;
+    }
+    if (app_uid < INT_MAX - 1) {
+        if (IP("-4", "rule", verb, "pref", PREF, "fwmark", "0x0/0xf0000",
+               "iif", "lo", "uidrange", above, "lookup", TABLE)) result = -1;
+        if (IP("-6", "rule", verb, "pref", PREF, "fwmark", "0x0/0xf0000",
+               "iif", "lo", "uidrange", above, "lookup", TABLE)) result = -1;
+    }
+    return result;
+}
+static void cleanup(uid_t app_uid) {
+    mutate_rules(0, app_uid);
     IP("-4", "route", "flush", "table", TABLE);
     IP("-6", "route", "flush", "table", TABLE);
 }
-static int install(void) {
-    /* Preserve LAN/loopback/tailnet addresses when not claimed by a VPN rule. */
+static int install(uid_t app_uid) {
+    /* Preserve LAN, link-local, and tailnet paths. */
     const char *skip4[] = {
         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
         "100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8",
@@ -60,16 +86,10 @@ static int install(void) {
         if (IP("-4", "route", "add", "throw", skip4[i], "table", TABLE)) return -1;
     for (int i = 0; skip6[i]; i++)
         if (IP("-6", "route", "add", "throw", skip6[i], "table", TABLE)) return -1;
-
     if (IP("-4", "route", "add", "default", "dev", IFACE, "table", TABLE)) return -1;
     if (IP("-6", "route", "add", "default", "dev", IFACE, "table", TABLE)) return -1;
-
-    /* Policy rules are installed LAST, only after Go has opened the fd. */
-    if (IP("-4", "rule", "add", "pref", PREF, "fwmark", "0x0/0x1ffff",
-           "iif", "lo", "lookup", TABLE)) return -1;
-    if (IP("-6", "rule", "add", "pref", PREF, "fwmark", "0x0/0x1ffff",
-           "iif", "lo", "lookup", TABLE)) return -1;
-    return 0;
+    /* Policy rules last, before Android's physical-network fallback at 22040. */
+    return mutate_rules(1, app_uid);
 }
 static int send_fd(int sock, int fd) {
     char mark = 'F';
@@ -121,14 +141,14 @@ int main(int argc, char **argv) {
 
     char command = 0;
     if (read(s, &command, 1) != 1 || command != 'A') return 11;
-    int ok = install();
-    if (ok) cleanup();
+    int ok = install(peer.uid);
+    if (ok) cleanup(peer.uid);
     char reply = ok ? 'E' : 'R';
-    if (write(s, &reply, 1) != 1) { cleanup(); return 12; }
+    if (write(s, &reply, 1) != 1) { cleanup(peer.uid); return 12; }
     if (ok) return 13;
     /* On app crash the socket closes, automatically restoring Android routing. */
     while (read(s, &command, 1) > 0 && command != 'S') {}
-    cleanup();
+    cleanup(peer.uid);
     close(s);
     close(tun);
     close(lock);

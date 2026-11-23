@@ -87,3 +87,16 @@ the last descriptor is closed. See root helper source for detailed cleanup.
 
 MIT, consistent with the original upstream project. See LICENSE.
 
+
+### Root routing fix in v0.1.0-root2
+
+The initial root1 release showed zero traffic because its rule matched only an entirely
+zero fwmark; Android tags normal app sockets with nonzero network IDs. Root2 now
+matches ordinary netId-marked traffic, excludes sockets carrying high mark flags
+(protected or explicitly bound), and skips its own Android UID so the Go engine
+cannot recursively capture its own network connections. Policy priority 22000
+sits after Android's VPN routing and before its physical network fallback.
+
+This is experimental. Test with an alternate (USB) ADB recovery path before
+activating. Root2 must not be expected to aggregate one TCP flow's throughput;
+it load balances different flows.

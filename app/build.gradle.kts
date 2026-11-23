@@ -14,8 +14,8 @@ android {
         applicationId = "org.netmerge.android.root"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-root1"
+        versionCode = 2
+        versionName = "0.1.0-root2"
     }
 
     // Releases are signed with the net-merge key when CI has it (ANDROID_KEYSTORE, from the repo's
