@@ -2,10 +2,8 @@ package org.netmerge.android
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -16,16 +14,8 @@ import org.netmerge.android.ui.MainScreen
 import org.netmerge.android.ui.NetMergeTheme
 
 class MainActivity : ComponentActivity() {
-
-    private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == RESULT_OK) {
-            MergeVpnService.start(this)
-        } else {
-            Toast.makeText(this, R.string.vpn_denied, Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val notifPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -52,18 +42,14 @@ class MainActivity : ComponentActivity() {
         ) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        // Debug builds only: lets the CI screenshot job switch merging on without tapping.
-        if (BuildConfig.DEBUG && intent.getBooleanExtra("autostart", false) && Engine.phase.value == Engine.Phase.OFF) {
-            toggle()
-        }
+        if (BuildConfig.DEBUG && intent.getBooleanExtra("autostart", false) &&
+            Engine.phase.value == Engine.Phase.OFF
+        ) toggle()
     }
 
     private fun toggle() {
-        if (Engine.phase.value != Engine.Phase.OFF) {
-            MergeVpnService.stop(this)
-            return
-        }
-        val consent = VpnService.prepare(this)
-        if (consent != null) vpnConsent.launch(consent) else MergeVpnService.start(this)
+        if (Engine.phase.value != Engine.Phase.OFF) MergeRootService.stop(this)
+        else MergeRootService.start(this)
     }
 }
+

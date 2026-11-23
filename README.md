@@ -1,130 +1,89 @@
-<h1 align="center">net-merge for Android</h1>
+# Net-Merge Root for Android
 
-<p align="center">
-  <b>Use Wi-Fi and mobile data at the same time.</b><br>
-  No root, no account, no server in between.
-</p>
+Experimental root-only fork of [net-merge/android](https://github.com/net-merge/android).
 
-<p align="center">
-  The official Android app of <a href="https://net-merge.org">net-merge</a>.<br>
-  <a href="https://github.com/net-merge/android/releases/latest/download/net-merge-android.apk"><b>Download the APK</b></a>
-</p>
+**Goal:** load-balance Wi-Fi and mobile-data connections without occupying Android's
+single VpnService slot. Tailscale or another VPN app can stay active.
 
-<p align="center">
-  <img src="docs/screenshots/on-dark.png" width="30%" alt="net-merge merging Wi-Fi and mobile data, dark theme">
-  &nbsp;
-  <img src="docs/screenshots/on-light.png" width="30%" alt="net-merge merging, light theme">
-  &nbsp;
-  <img src="docs/screenshots/off-dark.png" width="30%" alt="net-merge switched off">
-</p>
+This is **not** yet certified for daily use. Android OEMs modify policy routing.
+Use only on a rooted phone, and test with local USB ADB access before enabling
+it for the first time. A remote ADB connection may be cut if a policy rule behaves
+differently from the tested device. The helper automatically cleans up policy
+rules when the app stops or its local Unix socket disconnects.
 
-## What it does
+## What's different
 
-Your phone normally uses only one network at a time: Wi-Fi when it is connected, mobile data
-otherwise. net-merge keeps both connected and spreads your apps' connections across them.
-Faster networks get more connections, and a network that loses internet stops getting any.
+- Removes VpnService and its VPN permission request entirely.
+- Adds a small native root helper to create a TUN interface, configure a
+  separate routing table and transfer the TUN descriptor into the ordinary
+  unprivileged Android process using SCM_RIGHTS.
+- Keeps the original Go flow-balancing engine and existing Compose UI.
+- Keeps Android's normal VPN routing at priority 13000 ahead of the root
+  balancing rule at priority 23123. Normal physical-network fallback rules
+  come after priority 23123.
+- Matches **unmarked** locally originated packets only. Sockets explicitly
+  bound to Wi-Fi or cellular by the Go engine carry Android network fwmarks,
+  and do not get re-captured. This is crucial to preventing routing loops.
+- Preserves RFC1918 LAN destinations, link-local, and tailnet addresses with
+  throw routes (unless Android's VPN routing already claims them).
+- Uses a different Android package ID (org.netmerge.android.root), so it can
+  coexist with the official app.
+- A background privileged helper holds the routing rules for the life of an
+  authenticated Unix socket. Normal stop or app crash removes them.
 
-## What it speeds up
+## VPN coexistence: important limitations
 
-net-merge helps with anything that opens **several connections at once**:
+This design does **not** bypass Android's existing VPN or decrypt the VPN's
+traffic. Android selects a route through Tailscale **before** the new Net-Merge
+root rule. If the VPN is configured only for tailnet destinations, other
+unmarked internet flows may be balanced across Wi-Fi and cellular while
+tailnet flows still use Tailscale.
 
-- **Several downloads together**, like updating many apps at once in the Play Store
-- **Web pages**, which load many images and files in parallel
-- **Torrents**, which use dozens of connections
-- **Cloud backups and sync**, like Google Photos or Google Drive uploading several files
-- **Download manager apps** that split one file into parts (for example ADM or 1DM)
-- **Ookla Speedtest in Multi mode**
+If Tailscale runs as a **full-tunnel exit node**, it may claim all internet
+traffic before Net-Merge sees it, so the traffic will remain within the VPN
+and will not be balanced by the Net-Merge engine. A WireGuard/Tailscale tunnel
+typically uses one UDP socket per peer, and Net-Merge's per-flow engine cannot
+split a single encrypted UDP flow to double its speed.
 
-It does **not** speed up things that use a single connection:
+The exact route ordering is device- and OS-dependent, and must be verified
+on each ROM. Other root firewall/VPN applications may conflict with the
+custom priority 23123 and table 32013.
 
-- One big download, such as a single game from the Play Store or one file in your browser
-- A single video stream
-- Online games and video calls
+## Build
 
-Those stay on one network, so they are never slower than that network on its own.
+Requires Go 1.27 or later, Java 17, Android SDK and an Android NDK.
 
-It also keeps you online: if Wi-Fi drops, new connections go over mobile data.
+On Linux:
+1. Set ANDROID_HOME and ANDROID_NDK_HOME.
+2. Run bash scripts/build-go.sh.
+3. Run bash scripts/build-root-helper.sh.
+4. Run ./gradlew assembleDebug.
 
-## Install
+GitHub Actions performs these steps and provides build artifacts. The
+release variant without signing secrets uses the debug signing key.
 
-1. On your phone, tap **[Download the APK](https://github.com/net-merge/android/releases/latest/download/net-merge-android.apk)**.
-   Every version is on the [Releases](https://github.com/net-merge/android/releases) page, with SHA-256 checksums.
-2. Open the downloaded file and install it. If Android asks, allow your browser or file
-   manager to install unknown apps.
-3. Open **net-merge**, tap the power button and tap **OK** on the VPN prompt.
-4. Optional: add the **net-merge** tile to your Quick Settings panel for one-tap on/off.
+## Testing before daily use
 
-Requires Android 8.0 or newer.
+1. Keep local USB ADB available. Do not test over a remote-only Tailscale link.
+2. Start Tailscale. Verify access to a tailnet IP and a public IP.
+3. Install this root variant separately from the official Net-Merge.
+4. Start root mode and grant Magisk root permission.
+5. Check ip rule show for table 32013, and ip route show table 32013.
+6. Verify tailnet access, a LAN IP, public DNS, and public internet.
+7. Generate multiple independent downloads and confirm both interface
+   counters increase. Single-flow downloads are not expected to aggregate.
+8. Stop merging; verify the rule at priority 23123 and table 32013 are gone.
 
-## Using it
+When issues occur, stop the app. If its socket and root helper were both
+killed unexpectedly, recover from USB ADB:
 
-- **Power button:** turns merging on and off. A notification with a Stop button stays while it
-  is on.
-- **Network cards:** each network's status, its share of the traffic, and its live download and
-  upload speeds.
-- **Last minute:** a live chart of how much each network carried.
-- **Split evenly:** gives both networks the same share of new connections instead of following
-  their speed. Only useful when Wi-Fi and mobile data are about as fast as each other.
+    su -c 'ip -4 rule del pref 23123 fwmark 0x0/0x1ffff iif lo lookup 32013'
+    su -c 'ip -6 rule del pref 23123 fwmark 0x0/0x1ffff iif lo lookup 32013'
 
-Mobile data stays on the whole time merging is active, so keep an eye on your data plan.
+These delete only this fork's specific rules. The interface disappears when
+the last descriptor is closed. See root helper source for detailed cleanup.
 
-## What to expect
+## License
 
-- **A single connection always stays on one network.** One large file download, or a speed test
-  set to "Single" connection, won't get faster. Use "Multi" in Ookla Speedtest to see the
-  combined speed.
-- **The gain depends on how close the two networks are in speed.** Two similar networks can come
-  close to doubling. If Wi-Fi is 400 Mbps and mobile data is 60 Mbps, the best possible total is
-  about 460 Mbps.
-- **Upload works the same way.** It only adds up when an app uploads over several connections,
-  and mobile data's upload is often much slower than its download.
+MIT, consistent with the original upstream project. See LICENSE.
 
-## How it works
-
-net-merge is a local VPN. Android sends all traffic to the app, and the app opens each
-connection again over Wi-Fi or mobile data, then passes the data back and forth. Nothing goes
-through an outside server: the VPN exists only on your phone.
-
-For developers, in more detail:
-
-- The VPN's interface is handled on the phone by a user-space TCP/IP stack
-  ([gVisor](https://gvisor.dev) via [tun2socks](https://github.com/xjasonlyu/tun2socks)).
-- Each outgoing socket is tied to one network with `android_setsocknetwork` (the NDK form of
-  `Network.bindSocket`). The app leaves itself out of its own VPN, so those sockets go straight
-  out.
-- Android normally turns mobile data off while Wi-Fi is connected. The app keeps both up with
-  `ConnectivityManager.requestNetwork`, and follows networks coming and going with
-  `NetworkCallback`.
-- The balancing engine (scheduler, balancer and internet checks) is the Go code from
-  [net-merge](https://github.com/net-merge/net-merge) by Rohit Mahto, built for Android with
-  gomobile.
-
-## Building from source
-
-You need Go 1.27 or newer, JDK 17, the Android SDK and an Android NDK.
-
-```sh
-export ANDROID_HOME=~/Android/Sdk
-export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version>
-./scripts/build-go.sh       # builds the Go engine into app/libs/netmerge.aar
-./gradlew assembleRelease   # builds app/build/outputs/apk/release/app-release.apk
-```
-
-The engine's tests run on any computer: `cd golib && go test ./...`
-
-| Folder | Contents |
-| --- | --- |
-| `app/` | The Android app: VPN service, network tracking, screens and Quick Settings tile |
-| `golib/netmerge` | The functions the app calls in the Go engine |
-| `golib/internal/engine` | The balancing engine from upstream net-merge (commit `6093879`), plus Android additions: closing connections when their network disappears, upload-aware balancing, and starting from Android's speed estimates |
-| `golib/internal/tun` | Connects the VPN interface to the engine |
-| `golib/internal/nics` | Ties each socket to its Android network |
-
-## Credits and license
-
-Started by [SenseiRedsmoke](https://github.com/SenseiRedsmoke) as
-[net-merge-android](https://github.com/SenseiRedsmoke/net-merge-android), and brought into the net-merge
-project with its full history. Thank you!
-
-Based on [net-merge](https://github.com/net-merge/net-merge) by Rohit Mahto. MIT licensed, like
-the original. See [LICENSE](LICENSE).

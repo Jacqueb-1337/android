@@ -11,11 +11,11 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "org.netmerge.android"
+        applicationId = "org.netmerge.android.root"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.1.0-root1"
     }
 
     // Releases are signed with the net-merge key when CI has it (ANDROID_KEYSTORE, from the repo's
@@ -43,6 +43,7 @@ android {
         }
     }
 
+    packaging { jniLibs { useLegacyPackaging = true; keepDebugSymbols += "**/libnetmerge_root.so" } }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -72,3 +73,4 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 }
+

@@ -6,3 +6,4 @@ local.properties
 app/libs/*.aar
 app/libs/*.jar
 golib/.bin/
+app/src/main/jniLibs/**/libnetmerge_root.so
